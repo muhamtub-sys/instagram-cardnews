@@ -1,0 +1,61 @@
+# 하루 2번 이슈 카드뉴스를 만들어 인스타그램에 올립니다. (PC 필요 없음, 공개 저장소면 무료)
+name: Instagram card news
+
+on:
+  schedule:
+    - cron: "40 22 * * *"    # 한국시간 07:40 (GitHub 예약은 10~30분 늦게 시작될 수 있어 조금 일찍)
+    - cron: "40 9 * * *"     # 한국시간 18:40
+  workflow_dispatch:          # Actions 탭 → Run workflow 로 바로 실행
+
+permissions:
+  contents: write             # 만든 카드 이미지와 posts.csv 를 저장소에 커밋
+
+concurrency:
+  group: instagram-cardnews
+  cancel-in-progress: false
+
+jobs:
+  cardnews:
+    runs-on: ubuntu-latest
+    env:
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_API_HOST: ${{ vars.IG_API_HOST || 'graph.facebook.com' }}   # 시스템 사용자 토큰(EA…) 기준. 인스타 로그인 토큰(IGA…)이면 graph.instagram.com
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # Settings → Secrets and variables → Actions → Variables 에서 바꿀 수 있음
+      BRAND: ${{ vars.BRAND || '이슈 한 장' }}
+      HANDLE: ${{ vars.HANDLE || '@issue_onecard' }}
+      ISSUE_COUNT: ${{ vars.ISSUE_COUNT || '5' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+
+      - name: 이슈 모아 카드뉴스 만들기
+        run: python cardnews.py
+
+      # 이미지를 먼저 올려야 인스타가 가져갈 공개 주소가 생김
+      - name: 카드 이미지 저장
+        run: |
+          git config user.name "cardnews-bot"
+          git config user.email "cardnews-bot@users.noreply.github.com"
+          git add images posts.csv
+          git commit -m "카드뉴스 생성 $(TZ=Asia/Seoul date '+%m/%d %H:%M')"
+          git push
+          sleep 20
+
+      - name: 인스타 계정 ID 찾기 (IG_USER_ID 비어 있을 때만, 로그에서 숫자 확인)
+        if: env.IG_ACCESS_TOKEN != '' && env.IG_USER_ID == ''
+        run: python autopost.py --check
+
+      - name: 인스타그램에 올리기
+        if: env.IG_ACCESS_TOKEN != '' && env.IG_USER_ID != ''
+        run: python autopost.py
+
+      - name: 게시 결과 저장
+        if: always()
+        run: |
+          git add posts.csv
+          git diff --cached --quiet || (git commit -m "게시 결과 기록" && git push)
