@@ -37,7 +37,19 @@ from autopost import HERE, TZ, load_env, read_posts, write_posts
 W, H = 1080, 1350
 FONT_PATH = HERE / "fonts" / "NotoSansKR.ttf"
 IMAGES = HERE / "images"
-DEFAULT_FEEDS = "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"
+# 구글 뉴스가 GitHub 서버를 자주 막아서(429) 주요 언론사 RSS 를 함께 씀. 일부가 실패해도 나머지로 진행.
+DEFAULT_FEEDS = ",".join([
+    "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko",
+    "https://www.yna.co.kr/rss/news.xml",                                   # 연합뉴스
+    "https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=01&plink=RSSREADER",  # SBS 정치
+    "https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=02&plink=RSSREADER",  # SBS 경제
+    "https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=03&plink=RSSREADER",  # SBS 사회
+    "https://rss.donga.com/total.xml",                                      # 동아일보
+    "https://www.khan.co.kr/rss/rssdata/total_news.xml",                    # 경향신문
+    "https://www.hani.co.kr/rss/",                                          # 한겨레
+    "https://www.mk.co.kr/rss/30000001/",                                   # 매일경제
+    "https://fs.jtbc.co.kr/RSS/newsflash.xml",                              # JTBC
+])
 
 # 색상 (짙은 남색 배경 + 노란 포인트)
 BG, BG2 = (17, 24, 39), (30, 41, 59)
@@ -45,31 +57,55 @@ FG, SUB, ACCENT = (248, 250, 252), (148, 163, 184), (250, 204, 21)
 
 
 # ───────────────────────── 1. 이슈 수집 ─────────────────────────
-def fetch_news(hours=14, limit=40):
-    feeds = os.environ.get("NEWS_FEEDS", DEFAULT_FEEDS).split(",")
+def _get(url):
+    for attempt in range(2):
+        r = requests.get(url, timeout=20, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; issue-onecard-bot/1.0)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*"})
+        if r.status_code == 429 and attempt == 0:
+            time.sleep(5)
+            continue
+        r.raise_for_status()
+        return r.content
+    r.raise_for_status()
+
+
+def fetch_news(hours=14, per_feed=15, limit=80):
+    feeds = [u.strip() for u in os.environ.get("NEWS_FEEDS", DEFAULT_FEEDS).split(",") if u.strip()]
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     items, seen = [], set()
     for url in feeds:
-        r = requests.get(url.strip(), timeout=30, headers={"User-Agent": "Mozilla/5.0 cardnews-bot"})
-        r.raise_for_status()
-        for it in ET.fromstring(r.content).iter("item"):
-            title = (it.findtext("title") or "").strip()
-            source = (it.findtext("source") or "").strip()
+        try:
+            root = ET.fromstring(_get(url))
+        except Exception as e:
+            print(f"뉴스 가져오기 실패(건너뜀): {url} → {e}")
+            continue
+        channel = (root.findtext("channel/title") or "").strip()
+        n = 0
+        for it in root.iter("item"):
+            title = html.unescape((it.findtext("title") or "").strip())
+            source = (it.findtext("source") or "").strip() or channel
             if source and title.endswith(" - " + source):
                 title = title[: -len(source) - 3]
             try:
                 when = parsedate_to_datetime(it.findtext("pubDate"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=TZ)
             except Exception:
                 when = datetime.now(timezone.utc)
-            if when < since or title in seen:
+            if not title or when < since or title in seen:
                 continue
             seen.add(title)
-            # 구글 뉴스 description 에는 같은 사건을 다룬 다른 언론사 제목들이 들어 있음 → 맥락으로 사용
+            # 구글 뉴스는 관련 기사 제목들, 언론사 RSS 는 기사 요약이 들어 있음 → 맥락으로 사용
             desc = re.sub(r"<[^>]+>", " ", html.unescape(it.findtext("description") or ""))
             items.append({"title": title, "source": source,
-                          "related": re.sub(r"\s+", " ", desc).strip()[:400]})
-            if len(items) >= limit:
-                return items
+                          "related": re.sub(r"\s+", " ", desc).strip()[:300]})
+            n += 1
+            if n >= per_feed:
+                break
+        print(f"{channel or url}: {n}개")
+        if len(items) >= limit:
+            break
     return items
 
 
@@ -78,7 +114,7 @@ SYSTEM = """당신은 인스타그램 '카드뉴스' 에디터입니다. 주어�
 - 주어진 자료에 없는 숫자·인물·발언·원인은 절대 지어내지 않습니다. 모르면 쓰지 않습니다.
 - 정치적으로 한쪽 편을 드는 표현, 단정적 평가, 자극적 낚시 문구는 쓰지 않습니다.
 - 사망·범죄 피해자 등 개인을 특정하는 내용, 선정적인 사건은 고르지 않습니다.
-- 여러 언론사가 다룬(관련 기사가 많은) 이슈를 우선 고르고, 분야(사회·경제·IT·국제·생활 등)를 섞습니다.
+- 여러 언론사가 공통으로 다룬 이슈를 우선 고르고, 분야(사회·경제·IT·국제·생활 등)를 섞습니다.
 - 문장은 쉬운 존댓말, 짧게. 기사 문장을 그대로 베끼지 말고 새로 요약합니다."""
 
 SCHEMA = {
