@@ -360,8 +360,23 @@ def main():
                  "media_urls": "|".join(raw_url(p) for p in paths),
                  "caption": data["caption"].replace("\n", "\\n"),
                  "status": "", "post_id": "", "error": ""})
-    write_posts(rows)
     print("posts.csv 에 예약:", key)
+
+    # 같은 내용을 릴스(세로 영상)로도. 영상은 저장소가 커지지 않게 reels 브랜치에 최신 것만 둠.
+    if os.environ.get("REELS", "on").lower() != "off":
+        try:
+            from reels import OUT, make_reel
+            video, cover = make_reel(data, paths, OUT / f"{now:%Y%m%d_%H%M}.mp4",
+                                     os.environ.get("BRAND", "이슈 한 장"))
+            base = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/reels"
+            rows.append({"publish_at": key, "type": "reel",
+                         "media_urls": f"{base}/{video.name}|{base}/{cover.name}",
+                         "caption": data["caption"].replace("\n", "\\n"),
+                         "status": "", "post_id": "", "error": ""})
+            print("릴스도 예약:", key)
+        except Exception as e:                    # 영상이 실패해도 카드뉴스는 그대로 올림
+            print("릴스 만들기 실패(카드뉴스만 올림):", e)
+    write_posts(rows)
 
 
 if __name__ == "__main__":
