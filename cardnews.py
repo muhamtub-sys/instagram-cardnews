@@ -129,8 +129,10 @@ SCHEMA = {
                 "headline": {"type": "string"},   # 24자 이내
                 "points": {"type": "array", "items": {"type": "string"}},  # 2~3개, 각 45자 이내
                 "sources": {"type": "string"},    # 근거 언론사 이름, 쉼표 구분
+                "narration": {"type": "string"},  # 릴스 내레이션, 소리 내어 읽는 2~3문장 70~130자
+                "video_query": {"type": "string"},  # 스톡 영상 검색어(영어 2~4단어, 인물 이름 금지)
             },
-            "required": ["category", "headline", "points", "sources"]}},
+            "required": ["category", "headline", "points", "sources", "narration", "video_query"]}},
         "caption": {"type": "string"},          # 인스타 본문
     },
     "required": ["cover_title", "cover_sub", "issues", "caption"],
@@ -186,6 +188,10 @@ def write_cards(news, count):
 
 - cover_title: 예) "{now:%m/%d} {slot} 이슈 {count}" 처럼 짧게
 - issues: 정확히 {count}개, points 는 2~3개
+- narration: 릴스에서 AI 음성이 읽을 대본. 이슈 제목으로 시작해 핵심을 2~3문장(70~130자)으로, 말하듯 자연스럽게.
+  숫자는 읽기 쉽게, 괄호·특수문자·영어 약어 남발 금지.
+- video_query: 그 이슈 분위기에 맞는 무료 스톡 영상 검색어(영어 2~4단어). 실존 인물·기업 이름·로고 금지,
+  예) "bank money counting", "rainy city street", "smartphone in hand", "hospital corridor"
 - caption: 첫 줄 한 문장 요약, 이어서 이슈별 한 줄씩(번호), 마지막에
   "출처: 각 언론사 보도 종합" 과 해시태그 6~10개(#이슈한장 #오늘의이슈 #뉴스요약 포함)."""
     data = gemini_json(prompt)
@@ -329,12 +335,18 @@ SAMPLE = {
     "issues": [
         {"category": "경제", "headline": "기준금리 동결, 연말까지 이어질까", "sources": "예시일보, 샘플경제",
          "points": ["한국은행이 이번 달 기준금리를 그대로 유지했어요", "물가와 환율 흐름을 더 지켜보겠다는 입장이에요",
-                    "대출 금리는 당분간 큰 변화가 없을 전망이에요"]},
+                    "대출 금리는 당분간 큰 변화가 없을 전망이에요"],
+         "narration": "기준금리가 이번에도 동결됐어요. 한국은행은 물가와 환율 흐름을 더 지켜보겠다는 입장인데요, 대출 금리도 당분간 큰 변화는 없을 전망이에요.",
+         "video_query": "bank money counting"},
         {"category": "IT", "headline": "새 스마트폰 사전예약 시작", "sources": "샘플테크",
-         "points": ["주요 통신사에서 사전예약을 받기 시작했어요", "정식 출시는 다음 주로 예정돼 있어요"]},
+         "points": ["주요 통신사에서 사전예약을 받기 시작했어요", "정식 출시는 다음 주로 예정돼 있어요"],
+         "narration": "새 스마트폰 사전예약이 시작됐어요. 주요 통신사에서 예약을 받고 있고, 정식 출시는 다음 주예요.",
+         "video_query": "smartphone in hand"},
         {"category": "생활", "headline": "이번 주말 전국 첫 한파 예보", "sources": "예시방송",
          "points": ["주말 아침 기온이 영하로 떨어질 전망이에요", "수도관 동파와 빙판길에 주의가 필요해요",
-                    "주 후반부터는 기온이 다시 오를 예정이에요"]},
+                    "주 후반부터는 기온이 다시 오를 예정이에요"],
+         "narration": "이번 주말 전국에 첫 한파가 찾아와요. 아침 기온이 영하로 떨어져 수도관 동파와 빙판길에 주의가 필요해요.",
+         "video_query": "winter cold city morning"},
     ],
 }
 

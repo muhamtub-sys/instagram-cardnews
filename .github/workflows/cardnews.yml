@@ -27,6 +27,9 @@ jobs:
       HANDLE: ${{ vars.HANDLE || '@issue_onecard' }}
       ISSUE_COUNT: ${{ vars.ISSUE_COUNT || '5' }}
       REELS: ${{ vars.REELS || 'on' }}            # off 로 두면 카드뉴스만
+      REEL_STYLE: ${{ vars.REEL_STYLE || 'story' }}  # story=주제 영상(스톡 영상 키 필요, 없으면 릴스 건너뜀), cards=카드 슬라이드
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       REEL_TTS: ${{ vars.REEL_TTS || 'on' }}      # off 로 두면 AI 음성 없이 배경음만
       REEL_VOICE: ${{ vars.REEL_VOICE || 'ko-KR-SunHiNeural' }}
     steps:
