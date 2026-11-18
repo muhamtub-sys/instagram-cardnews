@@ -1,4 +1,4 @@
-# 하루 2번 이슈 카드뉴스를 만들어 인스타그램에 올립니다. (PC 필요 없음, 공개 저장소면 무료)
+# 하루 2번 이슈 카드뉴스와 같은 내용의 릴스(영상)를 만들어 인스타그램에 올립니다. (PC 필요 없음, 공개 저장소면 무료)
 name: Instagram card news
 
 on:
@@ -26,12 +26,17 @@ jobs:
       BRAND: ${{ vars.BRAND || '이슈 한 장' }}
       HANDLE: ${{ vars.HANDLE || '@issue_onecard' }}
       ISSUE_COUNT: ${{ vars.ISSUE_COUNT || '5' }}
+      REELS: ${{ vars.REELS || 'off' }}           # on 으로 바꾸면 릴스도 함께 (지금은 카드뉴스만)
+      REEL_TTS: ${{ vars.REEL_TTS || 'on' }}      # off 로 두면 AI 음성 없이 배경음만
+      REEL_VOICE: ${{ vars.REEL_VOICE || 'ko-KR-SunHiNeural' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: ffmpeg 준비
+        run: which ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
 
       - name: 이슈 모아 카드뉴스 만들기
         run: python cardnews.py
@@ -44,7 +49,23 @@ jobs:
           git add images posts.csv
           git commit -m "카드뉴스 생성 $(TZ=Asia/Seoul date '+%m/%d %H:%M')"
           git push
-          sleep 20
+
+      # 영상은 저장소가 계속 커지지 않도록 reels 브랜치에 최신 것만 덮어씀
+      - name: 릴스 영상 저장
+        if: hashFiles('reels_out/*.mp4') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/reels && cp reels_out/*.mp4 reels_out/*.jpg /tmp/reels/
+          cd /tmp/reels
+          git init -q -b reels
+          git config user.name "cardnews-bot"
+          git config user.email "cardnews-bot@users.noreply.github.com"
+          git add . && git commit -qm "릴스 $(TZ=Asia/Seoul date '+%m/%d %H:%M')"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" reels
+
+      - name: 공개 주소 반영 대기
+        run: sleep 20
 
       - name: 인스타 계정 ID 찾기 (IG_USER_ID 비어 있을 때만, 로그에서 숫자 확인)
         if: env.IG_ACCESS_TOKEN != '' && env.IG_USER_ID == ''

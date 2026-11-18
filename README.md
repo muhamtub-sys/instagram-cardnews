@@ -56,6 +56,17 @@ https://aistudio.google.com/apikey → **API 키 만들기** → 복사. (쓰레
 
 ---
 
+## 릴스(영상)도 함께 올리기
+
+매 회차 카드뉴스와 같은 내용으로 세로 영상(1080x1920)을 만들어 릴스로도 올립니다. 추가 설정은 필요 없어요.
+
+- 카드마다 AI 음성(edge-tts, 무료)이 내용을 읽어주고, 잔잔한 배경음이 깔립니다. 음성 서버가 막히면 배경음만으로 만들어요.
+- 배경음을 바꾸고 싶으면 저장소에 `music/` 폴더를 만들고 저작권 무료 음원(mp3 등, 예: 유튜브 오디오 보관함)을 넣으세요. 그중 하나를 무작위로 씁니다.
+- 영상 파일은 저장소가 커지지 않도록 `reels` 브랜치에 최신 것만 보관합니다.
+- 인스타 인기 음원은 API로 붙일 수 없습니다.
+- Variables 로 조절: `REELS=off`(릴스 끄기), `REEL_TTS=off`(음성 없이), `REEL_VOICE=ko-KR-InJoonNeural`(남성 목소리)
+- 미리 보기: `python reels.py --sample` → `reels_out/sample.mp4`
+
 ## 알아둘 점
 - **토큰은 60일마다 갱신**해야 해요. 2단계 4~5번을 다시 해서 `IG_ACCESS_TOKEN` 값만 바꾸면 됩니다.
 - 시간 바꾸기: `.github/workflows/cardnews.yml` 의 `cron` (UTC 기준, 한국시간 −9시간). GitHub 예약 실행은 10~30분 늦을 수 있어요.

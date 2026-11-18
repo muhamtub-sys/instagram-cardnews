@@ -86,9 +86,14 @@ class IG:
     def post_image(self, url, caption):
         return self._publish(self._container(image_url=url, caption=caption))
 
-    def post_reel(self, url, caption):
-        return self._publish(self._container(media_type="REELS", video_url=url,
-                                             caption=caption))
+    def post_reel(self, url, caption, cover_url=None):
+        params = {"media_type": "REELS", "video_url": url, "caption": caption,
+                  "share_to_feed": "true"}
+        if cover_url:
+            params["cover_url"] = cover_url
+        cid = self._container(**params)
+        self._wait_ready(cid, timeout=900)      # 영상은 처리에 몇 분 걸릴 수 있음
+        return self._publish(cid)
 
     def post_carousel(self, urls, caption):
         children = []
@@ -174,7 +179,7 @@ def main():
             if kind == "image":
                 pid = ig.post_image(urls[0], caption)
             elif kind == "reel":
-                pid = ig.post_reel(urls[0], caption)
+                pid = ig.post_reel(urls[0], caption, urls[1] if len(urls) > 1 else None)
             elif kind == "carousel":
                 pid = ig.post_carousel(urls, caption)
             else:

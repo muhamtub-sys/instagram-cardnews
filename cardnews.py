@@ -139,24 +139,39 @@ SCHEMA = {
 
 def gemini_json(prompt):
     key = os.environ["GEMINI_API_KEY"]
-    models = os.environ.get("GEMINI_MODELS", os.environ.get("GEMINI_MODEL", "gemini-3.8-flash,gemini-3.6-flash"))
+    models = os.environ.get("GEMINI_MODELS", os.environ.get("GEMINI_MODEL", "gemini-3.8-flash,gemini-3.6-flash,gemini-flash-latest,gemini-flash-lite-latest"))
     body = {"systemInstruction": {"parts": [{"text": SYSTEM}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "responseSchema": SCHEMA}}
     last = None
-    for model in [m.strip() for m in models.split(",") if m.strip()]:
-        for attempt in range(3):
-            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                              headers={"x-goog-api-key": key}, json=body, timeout=240)
-            if r.status_code in (429, 500, 503):      # 무료 등급은 몰리면 잠깐 거절 → 기다렸다 재시도
-                last = f"{model}: {r.status_code}"
-                time.sleep(15 * (attempt + 1))
+    # 무료 등급은 저녁 시간대에 자주 몰림(503·응답 지연) → 여러 모델을 돌아가며 최대 약 15분 재시도
+    names = [m.strip() for m in models.split(",") if m.strip()]
+    for rnd in range(4):
+        for model in list(names):
+            try:
+                r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                  headers={"x-goog-api-key": key}, json=body, timeout=120)
+            except requests.RequestException as e:   # 응답 시간 초과·연결 끊김도 재시도
+                last = f"{model}: {type(e).__name__}"
+                print("Gemini 재시도:", last)
                 continue
-            if r.status_code == 404:                  # 모델 이름이 없어졌으면 다음 모델로
+            if r.status_code in (429, 500, 502, 503, 504):
+                last = f"{model}: {r.status_code}"
+                print("Gemini 재시도:", last)
+                continue
+            if r.status_code == 404:                  # 모델 이름이 없어졌으면 빼고 진행
                 last = f"{model}: 404"
-                break
+                names.remove(model)
+                continue
             r.raise_for_status()
-            return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            try:
+                return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+            except (KeyError, IndexError, ValueError) as e:
+                last = f"{model}: 응답 형식 오류 {e}"
+                print("Gemini 재시도:", last)
+        if not names:
+            break
+        time.sleep(60 * (rnd + 1))
     raise RuntimeError(f"Gemini 실패: {last}")
 
 
@@ -360,8 +375,23 @@ def main():
                  "media_urls": "|".join(raw_url(p) for p in paths),
                  "caption": data["caption"].replace("\n", "\\n"),
                  "status": "", "post_id": "", "error": ""})
-    write_posts(rows)
     print("posts.csv 에 예약:", key)
+
+    # 같은 내용을 릴스(세로 영상)로도. 영상은 저장소가 커지지 않게 reels 브랜치에 최신 것만 둠.
+    if os.environ.get("REELS", "on").lower() != "off":
+        try:
+            from reels import OUT, make_reel
+            video, cover = make_reel(data, paths, OUT / f"{now:%Y%m%d_%H%M}.mp4",
+                                     os.environ.get("BRAND", "이슈 한 장"))
+            base = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/reels"
+            rows.append({"publish_at": key, "type": "reel",
+                         "media_urls": f"{base}/{video.name}|{base}/{cover.name}",
+                         "caption": data["caption"].replace("\n", "\\n"),
+                         "status": "", "post_id": "", "error": ""})
+            print("릴스도 예약:", key)
+        except Exception as e:                    # 영상이 실패해도 카드뉴스는 그대로 올림
+            print("릴스 만들기 실패(카드뉴스만 올림):", e)
+    write_posts(rows)
 
 
 if __name__ == "__main__":
