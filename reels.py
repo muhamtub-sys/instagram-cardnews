@@ -1,5 +1,8 @@
 """
-카드뉴스 이미지로 인스타 릴스(세로 영상)를 만듭니다. 무료 도구만 사용.
+인스타 릴스(세로 영상)를 만듭니다. 무료 도구만 사용.
+
+기본(REEL_STYLE=story): 이슈별 스톡 영상 + AI 음성 + 자막 → story_reel.py
+REEL_STYLE=cards: 아래 설명처럼 카드뉴스 이미지를 슬라이드 영상으로
 
   - 화면: 1080x1920(9:16), 카드를 가운데 두고 위아래는 같은 카드를 흐리게 깔아 채움, 천천히 확대되는 움직임
   - 음성: edge-tts (무료, 키 필요 없음) 로 카드 내용을 읽어줌. 실패하면 음성 없이 진행
@@ -103,6 +106,13 @@ def make_reel(data, card_paths, out_path, handle_name="이슈 한 장"):
     """카드 이미지 + 문구 → 릴스 mp4. 표지 이미지(9:16 jpg) 경로도 함께 돌려줌."""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg 가 없습니다")
+    # 기본은 주제 영상 방식(스톡 영상+음성+자막). 키가 없거나 실패하면 예외 → 이번 회차 릴스는 건너뜀.
+    # REEL_STYLE=cards 로 두면 아래 카드 슬라이드 방식.
+    if os.environ.get("REEL_STYLE", "story").lower() != "cards":
+        from story_reel import make_story_reel, stock_available
+        if not stock_available():
+            raise RuntimeError("PIXABAY_API_KEY(또는 PEXELS_API_KEY)가 없어 이번 회차 릴스는 건너뜁니다")
+        return make_story_reel(data, card_paths, out_path, handle_name)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     texts = scripts(data, handle_name)
@@ -172,6 +182,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", action="store_true", help="예시 카드로 만들어 보기")
     args = ap.parse_args()
+    from story_reel import stock_available
+    if not stock_available():
+        os.environ.setdefault("REEL_STYLE", "cards")
     from cardnews import SAMPLE, render
     paths = render(SAMPLE, OUT / "sample_cards")
     make_reel(SAMPLE, paths, OUT / "sample.mp4")
