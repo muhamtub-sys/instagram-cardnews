@@ -3,7 +3,9 @@ name: Instagram card news
 
 on:
   schedule:
-    - cron: "40 22 * * *"    # 한국시간 07:40 (GitHub 예약은 10~30분 늦게 시작될 수 있어 조금 일찍)
+    # GitHub 예약은 아침에 40분 넘게 늦게 시작되는 일이 잦아서,
+    # 아침 회차는 06:00 에 미리 시작해 카드·릴스를 만들어 두고 07:00 까지 기다렸다 올림
+    - cron: "0 21 * * *"     # 한국시간 06:00 시작 → 07:00 게시
     - cron: "40 9 * * *"     # 한국시간 18:40
   workflow_dispatch:          # Actions 탭 → Run workflow 로 바로 실행
 
@@ -70,6 +72,19 @@ jobs:
       - name: 공개 주소 반영 대기
         run: sleep 20
 
+      # 아침 예약 회차만: 한국시간 07:00 전이면 그때까지 기다림 (이미 지났으면 바로 올림)
+      - name: 아침 회차는 07:00 까지 대기
+        if: github.event_name == 'schedule' && github.event.schedule == '0 21 * * *'
+        run: |
+          target=$(TZ=Asia/Seoul date -d '07:00' +%s)
+          now=$(date +%s)
+          if [ "$now" -lt "$target" ]; then
+            echo "한국시간 07:00 까지 $(( (target - now) / 60 ))분 대기"
+            sleep $(( target - now ))
+          else
+            echo "이미 07:00 이 지나 바로 올림"
+          fi
+
       - name: 인스타 계정 ID 찾기 (IG_USER_ID 비어 있을 때만, 로그에서 숫자 확인)
         if: env.IG_ACCESS_TOKEN != '' && env.IG_USER_ID == ''
         run: python autopost.py --check
@@ -82,4 +97,6 @@ jobs:
         if: always()
         run: |
           git add posts.csv
-          git diff --cached --quiet || (git commit -m "게시 결과 기록" && git push)
+          git diff --cached --quiet && exit 0
+          git commit -m "게시 결과 기록"
+          git push || (git pull --rebase -q && git push)
