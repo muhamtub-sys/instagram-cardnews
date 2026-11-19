@@ -96,6 +96,7 @@ jobs:
       - name: 게시 결과 저장
         if: always()
         run: |
-          git pull --rebase -q || true
           git add posts.csv
-          git diff --cached --quiet || (git commit -m "게시 결과 기록" && git push)
+          git diff --cached --quiet && exit 0
+          git commit -m "게시 결과 기록"
+          git push || (git pull --rebase -q && git push)
