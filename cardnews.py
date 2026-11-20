@@ -1,5 +1,10 @@
 """
-오늘의 주요 이슈를 모아 카드뉴스(캐러셀 이미지 여러 장)로 만들고 posts.csv 에 바로 게시하도록 넣습니다.
+오늘의 주요 이슈를 모아 인스타에 올릴 게시물을 만들고 posts.csv 에 바로 게시하도록 넣습니다.
+
+회차별로 한 가지만 올립니다 (같은 내용이 피드에 두 번 보이지 않게)
+  아침(MODE=reel):  릴스만. 짧은 훅 + 핵심 이슈 3가지, 매번 같은 디자인의 커버
+  저녁(MODE=cards): 카드뉴스만. 아침에 다룬 이슈는 빼고, 이슈마다 '체크 포인트' + 마지막 장 체크리스트(저장·공유용)
+  MODE=auto(기본): 한국시간 15시 전이면 reel, 이후면 cards
 
   1) 이슈 수집: 구글 뉴스 RSS (한국, 무료·키 필요 없음)
   2) 정리: Google Gemini 무료 등급이 주요 이슈 N개를 골라 카드 문구와 본문을 씀
@@ -9,6 +14,7 @@
 사용법
   python cardnews.py              # 만들고 지금 시각으로 예약
   python cardnews.py --sample     # AI·뉴스 없이 예시 문구로 카드만 그려보기 (디자인 확인용)
+  python cardnews.py --sample --mode reel   # 예시 문구로 릴스 커버까지 그려보기
   python cardnews.py --no-queue   # 카드만 만들고 posts.csv 에는 넣지 않음
 
 환경변수
@@ -16,10 +22,13 @@
   BRAND            카드에 들어갈 계정 이름 (기본 "이슈 한 장")
   HANDLE           카드 하단 계정 아이디 (예: @today.issue)
   NEWS_FEEDS       RSS 주소들, 쉼표 구분 (기본: 구글 뉴스 한국 주요뉴스)
-  ISSUE_COUNT      한 번에 다룰 이슈 수 (기본 5, 최대 8)
+  ISSUE_COUNT      저녁 카드뉴스 이슈 수 (기본 5, 최대 7)
+  REEL_ISSUE_COUNT 아침 릴스 이슈 수 (기본 3)
+  MODE             reel / cards / auto
 """
 
 import argparse
+import tempfile
 import html
 import json
 import os
@@ -27,6 +36,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from email.utils import parsedate_to_datetime
 
 import requests
@@ -37,6 +47,7 @@ from autopost import HERE, TZ, load_env, read_posts, write_posts
 W, H = 1080, 1350
 FONT_PATH = HERE / "fonts" / "NotoSansKR.ttf"
 IMAGES = HERE / "images"
+TOPICS = HERE / "topics"          # 날짜별로 다룬 이슈 제목 (저녁에 아침 이슈를 빼려고 저장)
 # 구글 뉴스가 GitHub 서버를 자주 막아서(429) 주요 언론사 RSS 를 함께 씀. 일부가 실패해도 나머지로 진행.
 DEFAULT_FEEDS = ",".join([
     "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko",
@@ -131,9 +142,11 @@ SCHEMA = {
                 "sources": {"type": "string"},    # 근거 언론사 이름, 쉼표 구분
                 "narration": {"type": "string"},  # 릴스 내레이션, 소리 내어 읽는 2~3문장 70~130자
                 "video_query": {"type": "string"},  # 스톡 영상 검색어(영어 2~4단어, 인물 이름 금지)
+                "check": {"type": "string"},        # 저녁 카드: 독자가 챙길 점 한 줄, 40자 이내
             },
             "required": ["category", "headline", "points", "sources", "narration", "video_query"]}},
         "caption": {"type": "string"},          # 인스타 본문
+        "hook": {"type": "string"},             # 아침 릴스 첫 화면·첫 마디, 22자 이내
     },
     "required": ["cover_title", "cover_sub", "issues", "caption"],
 }
@@ -177,26 +190,80 @@ def gemini_json(prompt):
     raise RuntimeError(f"Gemini 실패: {last}")
 
 
-def write_cards(news, count):
+def _news_lines(news):
+    return "\n".join(f"{i+1}. [{n['source']}] {n['title']} | 관련: {n['related']}" for i, n in enumerate(news))
+
+
+def write_reel_script(news, count):
+    """아침 릴스: 짧은 훅 + 핵심 이슈 count 개."""
     now = datetime.now(TZ)
-    slot = "아침" if now.hour < 15 else "저녁"
-    lines = "\n".join(f"{i+1}. [{n['source']}] {n['title']} | 관련: {n['related']}" for i, n in enumerate(news))
-    prompt = f"""오늘은 {now:%Y년 %m월 %d일} {slot}입니다. 아래 뉴스 중 주요 이슈 {count}개를 골라 카드뉴스를 만들어 주세요.
+    prompt = f"""오늘은 {now:%Y년 %m월 %d일} 아침입니다. 아래 뉴스 중 출근길에 꼭 알아야 할 핵심 이슈 {count}개를 골라
+30~40초짜리 인스타 릴스 대본을 만들어 주세요.
 
 [뉴스 목록]
-{lines}
+{_news_lines(news)}
 
-- cover_title: 예) "{now:%m/%d} {slot} 이슈 {count}" 처럼 짧게
-- issues: 정확히 {count}개, points 는 2~3개
-- narration: 릴스에서 AI 음성이 읽을 대본. 이슈 제목으로 시작해 핵심을 2~3문장(70~130자)으로, 말하듯 자연스럽게.
+- hook: 영상 첫 2초에 화면에 크게 뜨고 그대로 읽을 한 문장(22자 이내). 고른 이슈 중 가장 궁금증을 끄는 사실로.
+  낚시·과장 금지, 자료에 있는 사실만. 예) "수출 1조 달러, 처음 넘었어요"
+- cover_title: "{now:%m/%d} 아침 이슈 {count}" 그대로
+- cover_sub: 고른 이슈를 짧게 이은 한 줄(30자 이내)
+- issues: 정확히 {count}개, 가장 중요한 순서. headline 은 20자 이내, points 는 2개
+- narration: AI 음성이 읽을 대본. 이슈 제목으로 시작해 핵심만 1~2문장(50~90자), 말하듯 자연스럽게.
   숫자는 읽기 쉽게, 괄호·특수문자·영어 약어 남발 금지.
 - video_query: 그 이슈 분위기에 맞는 무료 스톡 영상 검색어(영어 2~4단어). 실존 인물·기업 이름·로고 금지,
   예) "bank money counting", "rainy city street", "smartphone in hand", "hospital corridor"
-- caption: 첫 줄 한 문장 요약, 이어서 이슈별 한 줄씩(번호), 마지막에
-  "출처: 각 언론사 보도 종합" 과 해시태그 6~10개(#이슈한장 #오늘의이슈 #뉴스요약 포함)."""
+- sources: 근거 언론사 이름
+- caption: 첫 줄은 hook, 이어서 이슈별 한 줄씩(번호), 마지막에 "출처: 각 언론사 보도 종합" 과
+  해시태그 6~10개(#이슈한장 #오늘의이슈 #뉴스요약 #출근길뉴스 포함)."""
+    data = gemini_json(prompt)
+    data["issues"] = data["issues"][:count]
+    data.setdefault("hook", data.get("cover_title", ""))
+    return data
+
+
+def write_cards(news, count, covered=()):
+    """저녁 카드뉴스: 아침에 다룬 이슈는 빼고, 저장해 두고 볼 체크 포인트 중심."""
+    now = datetime.now(TZ)
+    slot = "아침" if now.hour < 15 else "저녁"
+    skip = ""
+    if covered:
+        skip = ("\n[오늘 이미 다룬 이슈 - 같은 사건·주제는 고르지 마세요]\n" +
+                "\n".join(f"- {c}" for c in covered) + "\n")
+    prompt = f"""오늘은 {now:%Y년 %m월 %d일} {slot}입니다. 아래 뉴스 중 주요 이슈 {count}개를 골라
+저장·공유하고 싶은 '체크리스트형' 카드뉴스를 만들어 주세요.
+
+[뉴스 목록]
+{_news_lines(news)}
+{skip}
+- cover_title: 예) "{now:%m/%d} {slot} 체크 {count}" 처럼 짧게
+- cover_sub: 예) "저장해 두고 하나씩 확인하세요" 처럼 30자 이내
+- issues: 정확히 {count}개. 생활·돈·일정에 영향이 있는 이슈를 우선. points 는 2~3개
+  (가능하면 '무엇이 바뀌나 / 언제부터 / 누구에게 해당' 처럼 비교·정리 형태)
+- check: 독자가 챙길 점 한 줄(40자 이내). 자료에 근거가 있는 내용만 쓰고,
+  없으면 "관련 공식 발표를 확인하세요"처럼 일반적인 행동으로. 투자·법률 조언 금지.
+- narration: 이 이슈를 소리 내어 읽는 2문장(70~110자)
+- video_query: 이슈 분위기에 맞는 영어 스톡 영상 검색어 2~4단어(실존 인물·기업 이름 금지)
+- caption: 첫 줄 "저장해 두고 보세요" 류의 한 문장, 이어서 이슈별 한 줄씩(번호), 마지막에
+  "출처: 각 언론사 보도 종합" 과 해시태그 6~10개(#이슈한장 #오늘의이슈 #뉴스요약 #체크리스트 포함)."""
     data = gemini_json(prompt)
     data["issues"] = data["issues"][:count]
     return data
+
+
+def load_covered(day):
+    p = TOPICS / f"{day}.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_covered(day, headlines):
+    TOPICS.mkdir(exist_ok=True)
+    p = TOPICS / f"{day}.json"
+    old = load_covered(day)
+    p.write_text(json.dumps(old + [h for h in headlines if h not in old], ensure_ascii=False, indent=1),
+                 encoding="utf-8")
 
 
 # ───────────────────────── 3. 카드 그리기 ─────────────────────────
@@ -272,7 +339,10 @@ def issue_card(it, n, brand, handle, page, total):
         hf, pf = font(hs, "Bold"), font(ps, "Regular")
         head = wrap(d, it["headline"], hf, W - 160)[:3]
         points = [wrap(d, p, pf, W - 210) for p in it["points"][:3]]
+        checks = wrap(d, it["check"], font(ps - 4, "Bold"), W - 280)[:2] if it.get("check") else []
         need = 110 + len(head) * hs * 1.33 + 100 + sum(len(pl) * ps * 1.5 + 40 for pl in points)
+        if checks:
+            need += 40 + len(checks) * (ps - 4) * 1.45 + 70
         if y0 + need <= H - 150:
             break
     y = y0
@@ -295,8 +365,81 @@ def issue_card(it, n, brand, handle, page, total):
             d.text((130, y), line, font=pf, fill=FG)
             y += int(ps * 1.5)
         y += 40
+    if checks:                                   # 저녁 카드: 챙길 점 박스
+        cf = font(ps - 4, "Bold")
+        y += 10
+        bh = int(len(checks) * cf.size * 1.45) + 60
+        d.rounded_rectangle([80, y, W - 80, y + bh], radius=24, fill=(51, 65, 85))
+        d.text((112, y + 30), "체크", font=font(30, "Black"), fill=ACCENT)
+        ty = y + 30
+        for line in checks:
+            d.text((200, ty), line, font=cf, fill=FG)
+            ty += int(cf.size * 1.45)
     footer(d, f"출처: {it['sources']}"[:46])
     return img
+
+
+def checklist_card(data, brand, page, total):
+    """저녁 카드뉴스 마지막 정리 장: 저장해 두고 보는 체크리스트."""
+    img, d = base(brand, page, total)
+    d.text((80, 260), "오늘 저녁 체크리스트", font=font(76, "Black"), fill=FG)
+    d.text((80, 370), "저장해 두고 하나씩 확인하세요", font=font(38), fill=SUB)
+    items = data["issues"]
+    hf_size, cf_size = (44, 34) if len(items) <= 5 else (38, 30)
+    y = 480
+    for it in items:
+        hf, cf = font(hf_size, "Bold"), font(cf_size)
+        d.rounded_rectangle([80, y + 4, 80 + hf_size, y + 4 + hf_size], radius=8, outline=ACCENT, width=4)
+        hl = wrap(d, it["headline"], hf, W - 240)[:1]
+        d.text((80 + hf_size + 28, y), hl[0] if hl else "", font=hf, fill=FG)
+        y += int(hf_size * 1.35)
+        sub = it.get("check") or (it.get("points") or [""])[0]
+        for line in wrap(d, sub, cf, W - 240)[:2]:
+            d.text((80 + hf_size + 28, y), line, font=cf, fill=SUB)
+            y += int(cf_size * 1.4)
+        y += 34
+        if y > H - 200:
+            break
+    footer(d, "공유하면 친구도 같이 챙길 수 있어요")
+    return img
+
+
+def reel_cover(data, path, brand, handle):
+    """아침 릴스 커버: 매번 같은 틀(남색 + 노란 날짜 배지)이라 프로필 격자가 정돈돼 보임.
+    프로필 격자는 3:4 로 가운데만 보여서 글자는 가운데(위아래 240px 안쪽)에만 둠."""
+    from reels import VH, VW
+    img = Image.new("RGB", (VW, VH), BG)
+    d = ImageDraw.Draw(img)
+    for y in range(VH):
+        t = y / VH
+        d.line([(0, y), (VW, y)], fill=tuple(int(BG[i] * (1 - t) + BG2[i] * t) for i in range(3)))
+    now = datetime.now(TZ)
+    n = len(data["issues"])
+    d.rectangle([90, 420, 90 + 64, 428], fill=ACCENT)
+    d.text((90, 450), brand, font=font(40, "Bold"), fill=FG)
+    badge = f"{now:%m.%d} 아침 이슈 {n}"
+    bf = font(46, "Black")
+    bw = d.textlength(badge, font=bf)
+    d.rounded_rectangle([90, 560, 90 + bw + 64, 650], radius=45, fill=ACCENT)
+    d.text((122, 605), badge, font=bf, fill=BG, anchor="lm")
+    hook = data.get("hook") or data.get("cover_title", "")
+    y = 740
+    for hs in (112, 100, 88, 78):
+        hf = font(hs, "Black")
+        lines = wrap(d, hook, hf, VW - 180)
+        if len(lines) <= 3:
+            break
+    for line in lines[:3]:
+        d.text((90, y), line, font=hf, fill=FG)
+        y += int(hs * 1.25)
+    y = max(y + 70, 1180)
+    for i, it in enumerate(data["issues"][:3]):
+        line = wrap(d, f"{i+1}  {it['headline']}", font(42, "Medium"), VW - 180)[0]
+        d.text((90, y), line, font=font(42, "Medium"), fill=SUB)
+        y += 64
+    d.text((90, 1600), handle, font=font(36, "Bold"), fill=SUB)
+    img.save(path, "JPEG", quality=92)
+    return path
 
 
 def end_card(brand, handle, total):
@@ -310,15 +453,17 @@ def end_card(brand, handle, total):
     return img
 
 
-def render(data, outdir):
+def render(data, outdir, checklist=False):
     brand = os.environ.get("BRAND", "이슈 한 장")
     handle = os.environ.get("HANDLE", "@issue_onecard")
     now = datetime.now(TZ)
     date_text = f"{now:%Y.%m.%d} " + ("AM" if now.hour < 12 else "PM")
     issues = data["issues"]
-    total = len(issues) + 2
+    total = len(issues) + 2 + (1 if checklist else 0)
     cards = [cover_card(data, brand, handle, total, date_text)]
     cards += [issue_card(it, i + 1, brand, handle, i + 2, total) for i, it in enumerate(issues)]
+    if checklist:
+        cards.append(checklist_card(data, brand, total - 1, total))
     cards.append(end_card(brand, handle, total))
     outdir.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -332,21 +477,22 @@ def render(data, outdir):
 SAMPLE = {
     "cover_title": "11/16 저녁 이슈 3",
     "cover_sub": "바쁜 하루, 꼭 알아야 할 소식만 모았어요",
+    "hook": "기준금리, 이번에도 그대로예요",
     "issues": [
         {"category": "경제", "headline": "기준금리 동결, 연말까지 이어질까", "sources": "예시일보, 샘플경제",
          "points": ["한국은행이 이번 달 기준금리를 그대로 유지했어요", "물가와 환율 흐름을 더 지켜보겠다는 입장이에요",
                     "대출 금리는 당분간 큰 변화가 없을 전망이에요"],
          "narration": "기준금리가 이번에도 동결됐어요. 한국은행은 물가와 환율 흐름을 더 지켜보겠다는 입장인데요, 대출 금리도 당분간 큰 변화는 없을 전망이에요.",
-         "video_query": "bank money counting"},
+         "video_query": "bank money counting", "check": "변동금리 대출이 있다면 다음 금리 조정일을 확인하세요"},
         {"category": "IT", "headline": "새 스마트폰 사전예약 시작", "sources": "샘플테크",
          "points": ["주요 통신사에서 사전예약을 받기 시작했어요", "정식 출시는 다음 주로 예정돼 있어요"],
          "narration": "새 스마트폰 사전예약이 시작됐어요. 주요 통신사에서 예약을 받고 있고, 정식 출시는 다음 주예요.",
-         "video_query": "smartphone in hand"},
+         "video_query": "smartphone in hand", "check": "통신사별 사전예약 혜택과 마감일을 비교해 보세요"},
         {"category": "생활", "headline": "이번 주말 전국 첫 한파 예보", "sources": "예시방송",
          "points": ["주말 아침 기온이 영하로 떨어질 전망이에요", "수도관 동파와 빙판길에 주의가 필요해요",
                     "주 후반부터는 기온이 다시 오를 예정이에요"],
          "narration": "이번 주말 전국에 첫 한파가 찾아와요. 아침 기온이 영하로 떨어져 수도관 동파와 빙판길에 주의가 필요해요.",
-         "video_query": "winter cold city morning"},
+         "video_query": "winter cold city morning", "check": "외출 전 수도 계량기 보온 상태를 확인하세요"},
     ],
 }
 
@@ -359,50 +505,86 @@ def raw_url(path):
     return f"https://raw.githubusercontent.com/{repo}/{branch}/{rel}"
 
 
+def resolve_mode(arg):
+    mode = (arg or os.environ.get("MODE") or "auto").lower()
+    if mode not in ("reel", "cards"):
+        mode = "reel" if datetime.now(TZ).hour < 15 else "cards"
+    if mode == "reel" and os.environ.get("REELS", "on").lower() == "off":
+        mode = "cards"                           # 릴스를 꺼 두었으면 아침에도 카드뉴스
+    return mode
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", action="store_true")
     ap.add_argument("--no-queue", action="store_true")
+    ap.add_argument("--mode", choices=["reel", "cards", "auto"])
     args = ap.parse_args()
     load_env()
 
     now = datetime.now(TZ)
-    key = now.strftime("%Y-%m-%d %H:%M")
+    key, stamp, day = now.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y%m%d_%H%M"), now.strftime("%Y-%m-%d")
+    mode = resolve_mode(args.mode)
+    brand = os.environ.get("BRAND", "이슈 한 장")
+    handle = os.environ.get("HANDLE", "@issue_onecard")
+    print("이번 회차:", "릴스만" if mode == "reel" else "카드뉴스만")
+
     if args.sample:
-        data = SAMPLE
+        data = dict(SAMPLE)
     else:
-        count = max(2, min(int(os.environ.get("ISSUE_COUNT", "5")), 8))   # 표지+끝 포함 최대 10장
         news = fetch_news()
+        if mode == "reel":
+            count = max(2, min(int(os.environ.get("REEL_ISSUE_COUNT", "3")), 5))
+        else:
+            count = max(2, min(int(os.environ.get("ISSUE_COUNT", "5")), 7))   # 표지+체크리스트+끝 포함 최대 10장
         if len(news) < count:
             raise SystemExit(f"최근 뉴스가 {len(news)}개뿐이라 이번 회차는 건너뜁니다.")
-        data = write_cards(news, count)
+        if mode == "reel":
+            data = write_reel_script(news, count)
+        else:
+            covered = load_covered(day)
+            if covered:
+                print("오늘 이미 다룬 이슈(제외):", *covered, sep="\n  ")
+            data = write_cards(news, count, covered)
 
-    paths = render(data, IMAGES / now.strftime("%Y%m%d_%H%M"))
-    print("카드 생성:", *[p.name for p in paths])
-    if args.sample or args.no_queue:
-        return
+    rows = [] if args.sample else read_posts()
+    caption = data.get("caption", "").replace("\n", "\\n")
 
-    rows = read_posts()
-    rows.append({"publish_at": key, "type": "carousel",
-                 "media_urls": "|".join(raw_url(p) for p in paths),
-                 "caption": data["caption"].replace("\n", "\\n"),
-                 "status": "", "post_id": "", "error": ""})
-    print("posts.csv 에 예약:", key)
-
-    # 같은 내용을 릴스(세로 영상)로도. 영상은 저장소가 커지지 않게 reels 브랜치에 최신 것만 둠.
-    if os.environ.get("REELS", "on").lower() != "off":
+    if mode == "reel":
         try:
             from reels import OUT, make_reel
-            video, cover = make_reel(data, paths, OUT / f"{now:%Y%m%d_%H%M}.mp4",
-                                     os.environ.get("BRAND", "이슈 한 장"))
-            base = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/reels"
-            rows.append({"publish_at": key, "type": "reel",
-                         "media_urls": f"{base}/{video.name}|{base}/{cover.name}",
-                         "caption": data["caption"].replace("\n", "\\n"),
-                         "status": "", "post_id": "", "error": ""})
-            print("릴스도 예약:", key)
-        except Exception as e:                    # 영상이 실패해도 카드뉴스는 그대로 올림
-            print("릴스 만들기 실패(카드뉴스만 올림):", e)
+            # 영상 속 배경(스톡 영상이 없을 때) 용 카드 이미지. 게시하지 않으므로 저장소에 남기지 않음.
+            with tempfile.TemporaryDirectory() as tmp:
+                cards = render(data, Path(tmp))
+                video, cover = make_reel(data, cards, OUT / f"{stamp}.mp4", brand)
+            reel_cover(data, cover, brand, handle)          # 통일된 커버로 덮어씀
+            print("릴스 생성:", video.name, "/ 커버:", cover.name)
+            if not (args.sample or args.no_queue):
+                base_url = f"https://raw.githubusercontent.com/{os.environ['GITHUB_REPOSITORY']}/reels"
+                rows.append({"publish_at": key, "type": "reel",
+                             "media_urls": f"{base_url}/{video.name}|{base_url}/{cover.name}",
+                             "caption": caption, "status": "", "post_id": "", "error": ""})
+                print("릴스 예약:", key)
+        except Exception as e:
+            # 영상이 실패하면 그 회차가 비지 않도록 같은 이슈로 카드뉴스를 대신 올림
+            print("릴스 만들기 실패 → 카드뉴스로 대신 올림:", e)
+            mode = "cards"
+            if args.sample:
+                from reels import OUT
+                reel_cover(data, OUT / "sample_cover.jpg", brand, handle)
+
+    if mode == "cards":
+        paths = render(data, IMAGES / stamp, checklist=any(it.get("check") for it in data["issues"]))
+        print("카드 생성:", *[p.name for p in paths])
+        if not (args.sample or args.no_queue):
+            rows.append({"publish_at": key, "type": "carousel",
+                         "media_urls": "|".join(raw_url(p) for p in paths),
+                         "caption": caption, "status": "", "post_id": "", "error": ""})
+            print("카드뉴스 예약:", key)
+
+    if args.sample or args.no_queue:
+        return
+    save_covered(day, [it["headline"] for it in data["issues"]])
     write_posts(rows)
 
 
