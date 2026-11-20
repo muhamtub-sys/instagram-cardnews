@@ -257,14 +257,17 @@ def make_story_reel(data, card_paths, out_path, brand="이슈 한 장"):
     n = len(issues)
     from autopost import TZ
     slot = "오늘 아침" if datetime.now(TZ).hour < 15 else "오늘 저녁"
-    scenes = [{"kind": "intro", "query": ["city timelapse", "newspaper reading"],
-               "text": f"{slot} 꼭 알아야 할 이슈 {n}가지, 1분 만에 정리해 드릴게요."}]
+    hook = (data.get("hook") or "").strip()
+    intro = f"{hook.rstrip('.')}. {slot} 핵심 {n}가지, 바로 볼게요." if hook else \
+        f"{slot} 꼭 알아야 할 이슈 {n}가지, 1분 만에 정리해 드릴게요."
+    scenes = [{"kind": "intro", "query": ["city timelapse", "newspaper reading"], "text": intro}]
     for i, it in enumerate(issues):
         text = it.get("narration") or f"{it['headline']}. " + " ".join(it.get("points", []))
         scenes.append({"kind": "issue", "it": it, "n": i + 1, "text": text,
                        "query": [it.get("video_query"), " ".join((it.get("video_query") or "").split()[:2]), "abstract background"]})
     scenes.append({"kind": "outro", "query": ["phone scrolling social media", "city night lights"],
-                   "text": f"{brand} 소식은 여기까지예요. 팔로우하고 다음 소식도 받아보세요."})
+                   "text": "오늘 아침 소식은 여기까지예요. 팔로우하면 매일 아침 7시에 받아볼 수 있어요." if hook else
+                   f"{brand} 소식은 여기까지예요. 팔로우하고 다음 소식도 받아보세요."})
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,7 +296,9 @@ def make_story_reel(data, card_paths, out_path, brand="이슈 한 장"):
             else:
                 png = tmp / f"o{i}.png"
                 if sc["kind"] == "intro":
-                    img = overlay_center(data.get("cover_title", ""), data.get("cover_sub", ""), handle)
+                    # 훅이 있으면 첫 화면에 훅을 크게 (첫 2초에 멈추게)
+                    img = overlay_center(hook or data.get("cover_title", ""),
+                                         data.get("cover_title", "") if hook else data.get("cover_sub", ""), handle)
                 else:
                     img = overlay_center(f"{brand}", "팔로우하고 다음 소식도 받아보세요", handle)
                 img.save(png)
