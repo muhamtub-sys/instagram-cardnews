@@ -15,6 +15,7 @@
 
 import argparse
 import csv
+import re
 import os
 import sys
 import time
@@ -58,6 +59,11 @@ class IG:
 
     def me(self):
         return self._call("GET", self.user_id, fields="id,username")
+
+    def recent(self, limit=12):
+        """최근 게시물 (중복 확인용)."""
+        return self._call("GET", f"{self.user_id}/media", fields="id,caption,timestamp",
+                          limit=limit).get("data", [])
 
     def publishing_limit(self):
         return self._call("GET", f"{self.user_id}/content_publishing_limit",
@@ -135,6 +141,21 @@ def due(row, now):
     return when <= now
 
 
+def _norm(text):
+    return re.sub(r"\s+", "", text or "")[:60]
+
+
+def find_existing(ig, caption):
+    """같은 본문으로 이미 올라간 게시물이 있으면 id. 인스타는 오류를 돌려주고도 실제로는 게시하는 경우가 있음."""
+    key = _norm(caption)
+    if not key:
+        return None
+    for m in ig.recent():
+        if _norm(m.get("caption")) == key:
+            return m["id"]
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -176,6 +197,16 @@ def main():
             print("(dry-run)")
             continue
         try:
+            existing = find_existing(ig, caption)
+        except Exception as e:
+            existing = None
+            print(f"(최근 게시물 확인 실패: {e}) ", end="")
+        if existing:
+            r.update(status="posted", post_id=existing, error="")
+            print("이미 올라가 있음(중복 게시 안 함)", existing)
+            write_posts(rows)
+            continue
+        try:
             if kind == "image":
                 pid = ig.post_image(urls[0], caption)
             elif kind == "reel":
@@ -187,8 +218,18 @@ def main():
             r.update(status="posted", post_id=pid, error="")
             print("완료", pid)
         except Exception as e:  # 한 글이 실패해도 나머지는 계속
-            r.update(status="error", error=str(e)[:300])
-            print("실패", e)
+            # 오류가 나도 실제로 올라간 경우가 있어 잠시 뒤 확인 (11/20 저녁: 'request limit' 오류인데 게시됨)
+            time.sleep(20)
+            try:
+                existing = find_existing(ig, caption)
+            except Exception:
+                existing = None
+            if existing:
+                r.update(status="posted", post_id=existing, error=f"오류 응답이었지만 게시 확인됨: {str(e)[:200]}")
+                print("오류 응답이었지만 실제로 게시됨", existing)
+            else:
+                r.update(status="error", error=str(e)[:300])
+                print("실패", e)
         write_posts(rows)
 
 

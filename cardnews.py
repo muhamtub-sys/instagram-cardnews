@@ -529,6 +529,18 @@ def main():
     handle = os.environ.get("HANDLE", "@issue_onecard")
     print("이번 회차:", "릴스만" if mode == "reel" else "카드뉴스만")
 
+    if not args.sample and not args.no_queue:
+        # 같은 날 같은 회차(아침/저녁)에 이미 만든 게시물이 있으면 또 만들지 않음 (예약이 늦게 돌아 수동 실행과 겹칠 때)
+        am = now.hour < 15
+        for r in read_posts():
+            try:
+                t = datetime.strptime(r["publish_at"].strip(), "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            if t.strftime("%Y-%m-%d") == day and (t.hour < 15) == am and r["status"].strip().lower() != "skip":
+                print(f"이번 회차는 이미 만들었습니다({r['publish_at']} {r['type']}, {r['status'] or '대기'}). 건너뜁니다.")
+                return
+
     if args.sample:
         data = dict(SAMPLE)
     else:
